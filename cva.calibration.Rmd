@@ -1,0 +1,316 @@
+---
+title: "CVA: calibration #1"
+author: "Yukie Toyama"
+date: "2024-06-16"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(readr)
+require(knitr)
+require(kableExtra)
+
+# read item df and create target.r with mutually exclusive values
+item_df <- read_csv("data/2024-06-13/cva-stimuli-map-2024-06-13.csv")
+# glimpse(item_df)
+# n_distinct(item_df$target)
+# get_dupes(item_df, target)
+
+item_df <- item_df %>% 
+  mutate(target.r = 
+           ifelse(target == "condition" & formAndId == "b-3-4-18", "condition2",
+           ifelse(target == "raise" & formAndId == "b-3-4-10", "raise2",
+           ifelse(target == "selected" & formAndId == "b-5-6-19m", "selected2",
+           ifelse(target == "usual" & formAndId == "a-5-6-5", "usual2", target))))
+         ) %>% 
+  mutate(decorated.r = 
+           ifelse(decorated == "adopted" & formAndId == "b-5-6-19m", 
+                  "adopted.m", decorated))
+
+```
+
+
+```{r tam_rasch, include=FALSE}
+
+resp_df <- read_csv("data/2024-06-13/cva-irt-input-2024-06-13.csv", na = c(".", "", " "))
+# glimpse(resp_df)
+
+# get formAndId from the column name 
+library(data.table)
+fm.id <- as.data.frame(colnames(resp_df[4:ncol(resp_df)])) %>% 
+  select(formAndId = "colnames(resp_df[4:ncol(resp_df)])")
+
+# combine item info into fm.id
+fm.id <- left_join(fm.id, item_df)
+
+# run Rasch model
+library("TAM")
+rasch <- tam(resp_df[,-c(1:3)])
+
+```
+
+```{r num.objects, echo=FALSE, results='hide'}
+#item difficulties
+fm.id<- bind_cols(fm.id, rasch$xsi)
+fm.id$item.order <- seq.int(nrow(fm.id))
+
+#person abilities
+s_df <- resp_df %>% 
+  select(user.assessmentUid, runId, user.grade)
+abil <- tam.wle(rasch)
+
+s_df <- 
+  bind_cols(s_df, abil) %>% 
+  select(-pid)
+
+n.item <- nrow(fm.id)
+n.stdt <- nrow(resp_df)
+md.idiff <- round(median(rasch$item$xsi.item), digits = 2)
+mean.idiff <- round(mean(rasch$item$xsi.item), digits = 2)
+sd.idiff <- round(sd(rasch$item$xsi.item), digits = 2)
+min.idiff <- round(min(rasch$item$xsi.item), digits = 2)
+max.idiff <- round(max(rasch$item$xsi.item), digits = 2)
+
+```
+
+### Wright Map
+
+We calibrated all available response data from `r n.stdt` students for `r n.item` items, using the Rasch model. The WrightMap shows item difficulty and ability estimates on the logit scale. Items are ordered by difficulty on the x-axis. The map visually shows that no items exist for the very top and the very bottom ends of the ability distribution along the y-axis. This may be because the calibration sample includes students who are outside of the target grade- / ability-levels (see Student Ability section below).  
+
+
+```{r wm, echo=FALSE, results = "hide", message =FALSE, fig.asp = 0.85, fig.width = 7, out.width = "98%"}
+
+library(WrightMap)
+library(RColorBrewer)
+
+#re-order rows from easy to difficult for WrightMap
+fm.id <- fm.id %>% arrange(xsi)
+
+wrightMap(s_df$theta, fm.id$xsi,
+          label.items = fm.id$decorated.r,
+          label.items.cex = 0.5,
+          show.thr.lab = FALSE,
+          label.items.srt = 90,
+          main.title = "WrightMap: 2,336 students, 81 items"
+	, axis.persons = "Students"
+	, axis.items = "",
+	dim.names = "",
+	item.prop = 0.85,
+	thr.sym.pch = 16,
+	dim.color = "#69b3a2",
+	thr.sym.col.fg = "#404080",
+	thr.sym.col.bg = "#404080")
+
+
+```
+
+### Item Difficulty
+Item difficulty ranged from `r min.idiff` to `r max.idiff` logits, with mean = `r mean.idiff` and SD = `r md.idiff`. 
+
+```{r item.sum, echo=FALSE, message = FALSE, warning = F, results = "asis"}
+
+library(hrbrthemes)
+
+fm.id %>% 
+  summarise(meam = mean(xsi),
+            sd = sd(xsi),
+            min = min(xsi),
+            max = max(xsi),
+            n= n()) %>% 
+  knitr::kable(., format = "html", 
+               caption = "Table 1. Item difficulty", 
+               digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = T)
+
+```
+
+A histogram and a boxplot below show the distribution of the item difficulty estimates. Given that the mean of the student ability is constrained to 0, the current CVA items as a set is relatively easier with the median of `r md.idiff`. The red line in the boxplot shows the mean item difficulty (`r mean.idiff`).  
+
+```{r item.dist, echo=FALSE, message = FALSE, warning = F, results = "asis"}
+fm.id %>%
+  ggplot( aes(x=xsi)) +
+    geom_histogram(alpha=0.6, position = 'identity',
+                   color="#404080", fill="#404080") +
+  scale_y_continuous(breaks=seq(0,10,2)) +
+  scale_x_continuous(breaks=seq(-1.5,1.5,0.5)) +
+    theme_ipsum() +
+    theme(
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10)
+    ) +
+    xlab("item difficulty estimates (in logit)") +
+    ylab("count") +
+  ggtitle("Item difficulty")
+
+fm.id %>%
+  ggplot(aes(x=xsi, y="")) +
+  geom_boxplot() + 
+  scale_x_continuous(breaks=seq(-1.5,1.5,0.5)) +
+  geom_vline(xintercept = -0.35, color = "red3") +
+  xlab("item difficulty estimates (in logit)") + 
+  theme_linedraw() +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) 
+
+
+
+```
+
+### Item Fit
+All CVA items except for one (decorated = "quotation") have infit values within the acceptable range (0.75-1.33), indicating that they fit to the Rasch model. In the Item Fit graph below, all except for one Infit value, are located between the blue vertical lines. 
+
+The misfitting item ("quotation") is the most difficult item (1.54 logits) in the item set. The infit value of 1.35 indicates that the item elicits responses that are more random than the model excepts. 
+
+The first expected score curve below shows the discrepancy between the model-based ICC (item characteristic curve, in blue) and the observed-ICC (in black) for the misfitting item ("quotation"). The observed line indicates that the item does not discriminate the higher ability from the lower-ability students; in fact, students with lower ability estimates have slight better chance of success than students with higher ability estimates. 
+
+The second curve is for the item with decorated word "critical". The Infit value for this item was 1.23, within the acceptable range, although the the item doesn't appear to be discriminating the middle range of the ability distribution (around -1 to 1 logit).
+
+A good explanation of item-fit statistics by Margaret Wu can be found [here](https://www.edmeasurementsurveys.com/residual-based-item-fit-statistics.html).
+
+```{r fit, echo=FALSE, message = FALSE, warning = F, results = "hide", fig.asp = 0.95, fig.height = 6, out.width = "98%"}
+
+# get fit stats
+fit <- tam.fit(rasch) 
+
+# combine fit stats into fm.id
+fm.id <- fm.id %>% 
+  arrange(item.order)
+fm.id <- bind_cols(fm.id, fit$itemfit)
+
+
+# fitplot
+require(ggplot2)
+
+fm.id %>% 
+  ggplot(aes(x = item.order, y = Infit)) +
+  geom_point(color = "#404080") +
+  scale_x_continuous(breaks=fm.id$item.order, 
+                     labels=fm.id$decorated.r) + 
+  geom_hline(yintercept = 0.75, color = "blue3") +
+  geom_hline(yintercept = 1.33, color = "blue3") +
+  theme(axis.text.x=element_text(angle=90, vjust=.5, size = 0.8),
+        plot.title = element_text(size = 14, face = "bold")) +
+  xlab("") +
+  ggtitle("Item Fit") + theme_linedraw() + coord_flip() 
+
+```
+
+```{r fit2, echo=FALSE, message = FALSE, warning = F, results = "hide"}
+
+#examine expected & observed ICC for "quotation"
+plot(rasch,items=45)
+# plot(rasch,items=45, ngroups = 3)
+
+#examine expected & observed ICC for "critical"
+plot(rasch,items=65)
+
+```
+
+```{r fit3, echo=FALSE, message = FALSE, warning = F}
+
+rownames(fm.id) <- NULL
+
+# "quotation" infit value is 1.53
+fm.id %>% filter(Infit >1.33) %>% 
+  select(formAndId, item, decorated, target,
+         starts_with("distractor"), 
+         difficulty = xsi ,Infit, Infit_t) %>% 
+  knitr::kable(., format = "html", 
+               caption = "Table 3a. Misfitting item (quotation)", 
+               digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = T)
+
+fm.id %>% filter(decorated == "critical") %>% 
+  select(formAndId, item, decorated, target,
+         starts_with("distractor"),
+         difficulty = xsi, Infit, Infit_t) %>% 
+  knitr::kable(., format = "html", 
+               caption = "Table 3b. Item (critical)", 
+               digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = T)
+
+```
+
+### Item Table
+Table below shows the item difficulty and item fit for the 81 CVA items, in the descending order of item difficulty (i.e., the most difficulty item at the top).
+
+```{r itemtble, echo = FALSE, message = FALSE, warning = F}
+library(DT)
+fm.id %>% 
+  select(fmid = formAndId, difficulty = xsi,
+         Infit, item, decorated, target, 
+         starts_with("distractor")) %>% 
+  arrange(desc(difficulty)) %>%
+  DT::datatable(rownames = FALSE,
+                options = list(pageLength = 20)) %>%
+  DT::formatRound(columns= c("difficulty", "Infit"), digits=2)
+
+```
+
+
+### Student Ability
+
+```{r abilities, echo=FALSE, message = FALSE, warning = F}
+s_df %>% 
+  summarise(meam = mean(theta),
+            sd = sd(theta),
+            min = min(theta),
+            max = max(theta),
+            n= n()) %>% 
+  knitr::kable(., format = "html", 
+               caption = "Table 2a. Student ability (all grades)", 
+               digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = T)
+
+s_df %>%
+  group_by(user.grade) %>% 
+  summarise(meam = mean(theta),
+            sd = sd(theta),
+            min = min(theta),
+            max = max(theta),
+            n= n()) %>% 
+  knitr::kable(., format = "html", 
+               caption = "Table 2b. Student ability, by grade", 
+               digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 12, full_width = T)
+
+library(viridis)
+
+s_df %>%
+  mutate(grade_fac = as.factor(user.grade)) %>% 
+  ggplot( aes(x=theta, fill=grade_fac, colour = grade_fac)) +
+    geom_histogram(alpha=0.6, position = 'identity') +
+    scale_fill_viridis(discrete=TRUE) +
+    scale_color_viridis(discrete=TRUE) +
+  scale_y_continuous(breaks=seq(0,60,20)) +
+    theme_ipsum() +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10)
+    ) +
+    xlab("ability estimates (in logit)") +
+    ylab("count") +
+    facet_wrap(~grade_fac, ncol = 3) +
+  ggtitle("Ability estimates by grade")
+
+
+```
+
+
+
